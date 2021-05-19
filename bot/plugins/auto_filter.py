@@ -1,315 +1,469 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# (c) @AlbertEinsteinTG
+
 import re
-import logging
+import time
 import asyncio
+import pyrogram
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from pyrogram.errors import ButtonDataInvalid, FloodWait
-
-from bot.database import Database # pylint: disable=import-error
-from bot.bot import Bot # pylint: disable=import-error
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from pyrogram.errors import UserAlreadyParticipant, FloodWait
 
 
-FIND = {}
-INVITE_LINK = {}
-ACTIVE_CHATS = {}
-db = Database()
+from bot.bot import Bot
+from bot.translation import Translation
+from bot.plugins.database import Database
 
-@Bot.on_message(filters.text & filters.group, group=0)
-async def auto_filter(bot, update):
-    """
-    A Funtion To Handle Incoming Text And Reply With Appropriate Results
-    """
+db = Database () 
+result = []
+
+@Client.on_message(filters.command("connect") & filters.group)
+async def connect(bot: Bot, update):
+
+    group_id = update.chat.id
+    text = update.text.split(None, 1)
+    
+    x = await bot.get_chat_member(group_id, update.from_user.id)
+    
+    if x.status == "member":
+        return
+    
+    if len(text) != 2:
+        return
+    
+    channel_id = int(text[1])
+    
+    conn_hist = await db.find_connections(group_id)
+    
+    if conn_hist: #TODO: Better Way!? 
+
+        channel1 = int(conn_hist["channel_ids"]["channel1"]) if conn_hist["channel_ids"]["channel1"] else None
+        channel2 = int(conn_hist["channel_ids"]["channel2"]) if conn_hist["channel_ids"]["channel2"] else None
+        channel3 = int(conn_hist["channel_ids"]["channel3"]) if conn_hist["channel_ids"]["channel3"] else None
+    
+    else:
+        channel1 = None
+        channel2 = None
+        channel3 = None
+    
+    if channel_id in (channel1, channel2, channel3):
+        await bot.send_message(
+            chat_id=group_id,
+            text="Group Is Aldready Connected With This Channel",
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    if None not in (channel1, channel2, channel3):
+        await bot.send_message(
+            chat_id=group_id,
+            text="Group Reached Its Connection Limit...\nDisconnect From Any Channel To Continue",
+            reply_to_message_id=update.message_id
+        )
+        return
+
+    if channel1 is None:
+        channel1 = channel_id
+    
+    elif channel2 is None:
+        channel2 = channel_id
+    
+    elif channel3 is None:
+        channel3 = channel_id
+
+    # Export Invite Link For Userbot
+    try:
+        join_link = await bot.export_chat_invite_link(channel_id)
+    except Exception as e:
+        print(e) 
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Make Sure I'm Admin In <code>{channel_id}</code> And Have Permission - `Invite Users via Link`",
+            parse_mode="html",
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    user = await bot.USER.get_me()
+    user_id = user.id
+    
+    # Tries To Unban The UserBot
+    try:
+        await bot.unban_chat_member(
+            chat_id=channel_id,
+            user_id=user_id
+        )
+    except Exception as e:
+        pass
+    
+    # Userbot Joins The Channel
+    try:
+        await bot.USER.join_chat(join_link)
+    except UserAlreadyParticipant:
+        pass
+    except Exception as e:
+        print (e)
+        
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"My Userbot `@{user.username}` Cant join Your Channel Make Sure He Is Not Banned There..",
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    chat_name = await bot.get_chat(channel_id) 
+    responce = await db.add_connections(group_id, channel1, channel2, channel3)
+
+    if responce:
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Sucessfully Connected To <code>{chat_name.title}</code>",
+            parse_mode="html",
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    else:
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Having Problem While Connecting...Report @CrazyBotsz",
+            reply_to_message_id=update.message_id
+        )
+        return
+
+
+@Client.on_message(filters.command("disconnect") & filters.group)
+async def disconnect(bot, update):
+    group_id = update.chat.id
+    text = update.text.split(None, 1)
+    
+    x = await bot.get_chat_member(group_id, update.from_user.id)
+    
+    if x.status == "member":
+        return
+    
+    if len(text) != 2:
+        return
+    
+    channel_id = int(text[1])
+    
+    conn_hist = await db.find_connections(group_id)
+    
+    if conn_hist:
+        channel1 = int(conn_hist["channel_ids"]["channel1"]) if conn_hist["channel_ids"]["channel1"] else None
+        channel2 = int(conn_hist["channel_ids"]["channel2"]) if conn_hist["channel_ids"]["channel2"] else None
+        channel3 = int(conn_hist["channel_ids"]["channel3"]) if conn_hist["channel_ids"]["channel3"] else None
+    
+    else:
+        await bot.send_message(
+            chat_id=group_id,
+            text="Group Is Not Connected With Any Channel",
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    if channel_id not in (channel1, channel2, channel3):
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Group Is Not Connected With This Chat : <code>{channel_id}</code>",
+            parse_mode="html", 
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    if channel1 == channel_id:
+        channel1 = None
+    
+    elif channel2 == channel_id:
+        channel2 = None
+    
+    elif channel3 == channel_id:
+        channel3 = None
+
+    try:
+        await bot.USER.leave_chat(channel_id)
+    except:
+        pass
+    
+    chat_name = await bot.get_chat(channel_id)
+    
+    try:
+        await bot.leave_chat(channel_id)
+    except:
+        pass
+    
+    responce = await db.add_connections(group_id, channel1, channel2, channel3)
+
+    if responce:
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Sucessfully Disconnected From <code>{chat_name.title}</code>",
+            parse_mode="html", 
+            reply_to_message_id=update.message_id
+        )
+        return
+    
+    else:
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Having Problem While Disconnecting...Report @CrazyBotsz",
+            reply_to_message_id=update.message_id
+        )
+        return
+
+
+@Client.on_message(filters.command("delall") & filters.group)
+async def delall(bot, update):
     group_id = update.chat.id
 
-    if re.findall(r"((^\/|^,|^\.|^[\U0001F600-\U000E007F]).*)", update.text):
+    x = await bot.get_chat_member(group_id, update.from_user.id)
+    
+    if x.status == "creator":
+        pass
+    else:
+        print(x.status) 
+        return
+    print("Ok") 
+    conn_hist = await db.find_connections(group_id)
+    print(conn_hist) 
+    if conn_hist:
+        channel1 = int(conn_hist["channel_ids"]["channel1"]) if conn_hist["channel_ids"]["channel1"] else None
+        channel2 = int(conn_hist["channel_ids"]["channel2"]) if conn_hist["channel_ids"]["channel2"] else None
+        channel3 = int(conn_hist["channel_ids"]["channel3"]) if conn_hist["channel_ids"]["channel3"] else None
+        channels = [channel1, channel2, channel3]
+    else:
         return
     
-    if ("https://" or "http://") in update.text:
+    for channel in channels:
+        if channel == None:
+            continue
+        try:
+            await bot.USER.leave_chat(channel)
+        except:
+            pass
+        try:
+            await bot.leave_chat(channel)
+        except:
+            pass
+    
+    responce = await db.delete_connections(group_id)
+    
+    if responce:
+        await bot.send_message(
+            chat_id=group_id,
+            text=f"Sucessfully Disconnected From All Chats",
+            reply_to_message_id=update.message_id
+        )
+        return
+
+
+@Client.on_message(filters.text & filters.group)
+async def auto_filter (bot, update):
+    
+    group_id = update.chat.id
+    
+    if re.findall("((^\/|^,|^\.|^[\U0001F600-\U000E007F]).*)", update.text):
         return
     
-    query = re.sub(r"[1-2]\d{3}", "", update.text) # Targetting Only 1000 - 2999 😁
-    
-    if len(query) < 2:
+    query = update.text
+
+    if len(query) < 3:
         return
     
     results = []
+
+    conn_hist = await db.find_connections(group_id)
     
-    global ACTIVE_CHATS
-    global FIND
-    
-    configs = await db.find_chat(group_id)
-    achats = ACTIVE_CHATS[str(group_id)] if ACTIVE_CHATS.get(str(group_id)) else await db.find_active(group_id)
-    ACTIVE_CHATS[str(group_id)] = achats
-    
-    if not configs:
+    if conn_hist: # TODO: Better Way!? 😕
+        channel1 = int(conn_hist["channel_ids"]["channel1"]) if conn_hist["channel_ids"]["channel1"] else None
+        channel2 = int(conn_hist["channel_ids"]["channel2"]) if conn_hist["channel_ids"]["channel2"] else None
+        channel3 = int(conn_hist["channel_ids"]["channel3"]) if conn_hist["channel_ids"]["channel3"] else None
+        channels = [channel1, channel2, channel3]
+    else:
         return
     
-    allow_video = configs["types"]["video"]
-    allow_audio = configs["types"]["audio"] 
-    allow_document = configs["types"]["document"]
-    
-    max_pages = configs["configs"]["max_pages"] # maximum page result of a query
-    pm_file_chat = configs["configs"]["pm_fchat"] # should file to be send from bot pm to user
-    max_results = configs["configs"]["max_results"] # maximum total result of a query
-    max_per_page = configs["configs"]["max_per_page"] # maximum buttom per page 
-    show_invite = configs["configs"]["show_invite_link"] # should or not show active chat invite link
-    
-    show_invite = (False if pm_file_chat == True else show_invite) # turn show_invite to False if pm_file_chat is True
-    
-    filters = await db.get_filters(group_id, query)
-    
-    if filters:
-        #results.append(
-        #        [
-        #            InlineKeyboardButton("⭕️ JOIN OUR MAIN CHANNEL ⭕️", url="https://t.me/Tamil_Tentkotta")
-        #        ]
-        #    ) 
-        for filter in filters: # iterating through each files
-            file_name = filter.get("file_name")
-            file_type = filter.get("file_type")
-            file_link = filter.get("file_link")
-            file_size = int(filter.get("file_size", ""))
-            file_size = round((file_size/1024),2) # from B to KB
-            size = ""
-            file_KB = ""
-            file_MB = ""
-            file_GB = ""
-            
-            if file_size < 1024:
-                file_KB = f"[{str(round(file_size,2))} KB]"
-                size = file_KB
-            elif file_size < (1024*1024):
-                file_MB = f"[{str(round((file_size/1024),2))} MB]"
-                size = file_MB
+    for channel in channels:
+        if channel == None:
+            continue
+        
+        async for msgs in bot.USER.search_messages(chat_id=channel, query=query, filter="document", limit=150):
+
+            if msgs.video:
+                name = msgs.video.file_name
+            elif msgs.document:
+                name = msgs.document.file_name
+            elif msgs.audio:
+                name = msgs.audio.file_name
             else:
-                file_GB = f"[{str(round((file_size/(1024*1024)),2))} GB]"
-                size = file_GB
-                
-            file_name = size + " - 🎬 " + file_name
-            
-            print(file_name)
-            #file_size = str(file_size) + " KB" if file_size < 1024 elif file_size < 1024 else str(round(file_size/1024)) + " GiB"  #"📁 " + 
-            
-            if file_type == "video":
-                if allow_video: 
-                    pass
-                else:
-                    continue
-                
-            elif file_type == "audio":
-                if allow_audio:
-                    pass
-                else:
-                    continue
-                
-            elif file_type == "document":
-                if allow_document:
-                    pass
-                else:
-                    continue
-            
-            if len(results) >= max_results:
-                break
-            
-            if pm_file_chat: 
-                unique_id = filter.get("unique_id")
-                if not FIND.get("bot_details"):
-                    try:
-                        bot_= await bot.get_me()
-                        FIND["bot_details"] = bot_
-                    except FloodWait as e:
-                        asyncio.sleep(e.x)
-                        bot_= await bot.get_me()
-                        FIND["bot_details"] = bot_
-                
-                bot_ = FIND.get("bot_details")
-                file_link = f"https://t.me/{bot_.username}?start={unique_id}"
-            
-            
-            
-            results.append(
-                [
-                    InlineKeyboardButton(file_name, url=file_link)
-                ]
-            )
-        #https://telegra.ph/file/f3ea3421859204e383b03.jpg
-    else:
-        Send_message=await bot.send_video(
-                chat_id = update.chat.id,
-                video="https://telegra.ph/file/3e9f7db0c98e6b236c2c7.mp4",
-                caption=f"Couldn't Find This Movie.Please Try Again Or Search On Our <b><a href='https://t.me/Tamil_Tentkotta'>Channel</a></b>. \n\nഈ സിനിമയുടെ ഒറിജിനൽ പേര് ഗൂഗിളിൽ പോയി കണ്ടെത്തി അതുപോലെ ഇവിടെ കൊടുക്കുക 🥺",
-                parse_mode="html",
-                reply_to_message_id=update.message_id
-            )
-        await asyncio.sleep(15) # in seconds
-        await Send_message.delete()
-        #await bot.delete_messages(update.chat.id,update.message_id)
-        return # return if no files found for that query
-    
+                name = None
 
-    if len(results) == 0: # double check
+            link = msgs.link
+            
+            if name is not None:
+                results.append([InlineKeyboardButton(name, url=link)])
+
+
+        async for msgs in bot.USER.search_messages(chat_id=channel, query=query, filter="video", limit=150):
+
+            if msgs.video:
+                name = msgs.video.file_name
+            elif msgs.document:
+                name = msgs.document.file_name
+            elif msgs.audio:
+                name = msgs.audio.file_name
+            else:
+                name = None
+
+            link = msgs.link
+            
+            if name is not None:
+                results.append([InlineKeyboardButton(name, url=link)])
+
+    if len(results) == 0:
+        # await bot.send_message(
+        #     chat_id = update.chat.id,
+        #     text=f"Couldn't Find A Matching Result",
+        #     reply_to_message_id=update.message_id
+        # )
         return
     
     else:
-    
+        global result
         result = []
-        # seperating total files into chunks to make as seperate pages
-        result += [results[i * max_per_page :(i + 1) * max_per_page ] for i in range((len(results) + max_per_page - 1) // max_per_page )]
-        len_result = len(result)
-        len_results = len(results)
-        results = None # Free Up Memory
+        result += [results[i * 30 :(i + 1) * 30 ] for i in range((len(results) + 30 - 1) // 30 )]
         
-        FIND[query] = {"results": result, "total_len": len_results, "max_pages": max_pages} # TrojanzHex's Idea Of Dicts😅
+        if len(results) >30:
+            result[0].append([InlineKeyboardButton("Next ⏩", callback_data=f"0 | {update.from_user.id} | next_btn")])
 
-        # Add next buttin if page count is not equal to 1
-        if len_result != 1:
-            result[0].append(
-                [
-                    InlineKeyboardButton("Next ⏩", callback_data=f"navigate(0|next|{query})")
-                ]
-            )
-        
-        # Just A Decaration
-        result[0].append([
-            InlineKeyboardButton(f"🔰 Page 1/{len_result if len_result < max_pages else max_pages} 🔰", callback_data="ignore")
-        ])
-        
-        
-        # if show_invite is True Append invite link buttons
-        if show_invite:
-            
-            ibuttons = []
-            achatId = []
-            await gen_invite_links(configs, group_id, bot, update)
-            
-            for x in achats["chats"] if isinstance(achats, dict) else achats:
-                achatId.append(int(x["chat_id"])) if isinstance(x, dict) else achatId.append(x)
-
-            ACTIVE_CHATS[str(group_id)] = achatId
-            
-            for y in INVITE_LINK.get(str(group_id)):
-                
-                chat_id = int(y["chat_id"])
-                
-                if chat_id not in achatId:
-                    continue
-                
-                chat_name = y["chat_name"]
-                invite_link = y["invite_link"]
-                
-                if ((len(ibuttons)%2) == 0):
-                    ibuttons.append(
-                        [
-                            InlineKeyboardButton(f"⚜ {chat_name} ⚜", url=invite_link)
-                        ]
-                    )
-
-                else:
-                    ibuttons[-1].append(
-                        InlineKeyboardButton(f"⚜ {chat_name} ⚜", url=invite_link)
-                    )
-                
-            for x in ibuttons:
-                result[0].insert(0, x) #Insert invite link buttons at first of page
-                
-            ibuttons = None # Free Up Memory...
-            achatId = None
-        
-        ibuttonss = []
-        ibuttonss.append(
-                        [
-                            InlineKeyboardButton("⭕️ JOIN OUR MAIN CHANNEL ⭕️", url="https://t.me/Tamil_Tentkotta")
-                        ]
-                    )
-        for x in ibuttonss:
-                result[0].insert(0, x) #Insert invite link buttons at first of page
-        
         reply_markup = InlineKeyboardMarkup(result[0])
 
-        try:
-            await bot.send_message(
-                chat_id = update.chat.id,
-                text=f"We Found <code><b><i>{(len_results)}</i></b></code> Results For Your Query: <code><b><i>{query}</i></b></code>, Requested By <b><code>{update.from_user.first_name}</code></b>",
-                reply_markup=reply_markup,
-                parse_mode="html",
-                reply_to_message_id=update.message_id
-            )
+        await bot.send_message(
+            chat_id = update.chat.id,
+            text=f"Found {(len(results))} Results For Query: <code>{query}</code>",
+            reply_markup=reply_markup,
+            parse_mode="html",
+            reply_to_message_id=update.message_id
+        )
 
-        except ButtonDataInvalid:
-            print(result[0])
+@Client.on_callback_query()
+async def cb_handler(bot, query:CallbackQuery, group=1):
+    cb_data = query.data
+    
+    if cb_data == "start":
+        buttons = [[
+            InlineKeyboardButton('Movie Channel', url ='https://t.me/Tamil_Tentkotta')
+        ],[
+            InlineKeyboardButton('Support Group ', url='https://t.me/Tentkotta_Tamil_request')
+        ],[
+            InlineKeyboardButton('Help ⚙', callback_data="help")
+        ]]
+    
+        reply_markup = InlineKeyboardMarkup(buttons)
         
+        await query.message.edit_text(
+            Translation.START_TEXT.format(query.from_user.mention),
+            reply_markup=reply_markup,
+            parse_mode="html",
+            disable_web_page_preview=True
+        )
+    
+    elif cb_data == "help":
+        buttons = [[
+            InlineKeyboardButton('Home ⚡', callback_data='start'),
+            InlineKeyboardButton('About 🚩', callback_data='about')
+        ],[
+            InlineKeyboardButton('Close 🔐', callback_data='close')
+        ]]
+    
+        reply_markup = InlineKeyboardMarkup(buttons)
+        
+        await query.message.edit_text(
+            Translation.HELP_TEXT,
+            reply_markup=reply_markup,
+            parse_mode="html",
+            disable_web_page_preview=True
+        )
+    
+    elif cb_data == "about": 
+        buttons = [[
+            InlineKeyboardButton('Home ⚡', callback_data='start'),
+            InlineKeyboardButton('Close 🔐', callback_data='close')
+        ]]
+        
+        reply_markup = InlineKeyboardMarkup(buttons)
+        
+        await query.message.edit_text(
+            Translation.ABOUT_TEXT,
+            reply_markup=reply_markup,
+            parse_mode="html",
+            disable_web_page_preview=True
+        )
+    
+    elif cb_data == "close":
+        await query.message.delete()
+
+
+    elif "btn" in cb_data :
+        cb_data = cb_data.split("|") 
+
+        index_val = cb_data[0]
+        user_id = cb_data[1]
+        data = cb_data[2].strip()
+    
+        if int(query.from_user.id) != int(user_id):
+            await query.answer("You Arent Worth To Do That!!",show_alert=True) # Lol😆
+            return
+        else:
+            pass
+    
+
+        if data == "next_btn":
+            index_val = int(index_val) + 1
+        elif data == "back_btn":
+            index_val = int(index_val) - 1
+        
+        try:
+            temp_results = result[index_val].copy()
+        except IndexError:
+            return # Quick Fix🏃🏃
         except Exception as e:
             print(e)
-
-
-async def gen_invite_links(db, group_id, bot, update):
-    """
-    A Funtion To Generate Invite Links For All Active 
-    Connected Chats In A Group
-    """
-    chats = db.get("chat_ids")
-    global INVITE_LINK
+            return
     
-    if INVITE_LINK.get(str(group_id)):
-        return
+        if int(index_val) == (len(result) -1) or int(index_val) == 10: # Max 10 Page
+            temp_results.append([
+                InlineKeyboardButton("⏪ Back", callback_data=f"{index_val} | {query.from_user.id} | back_btn")
+            ])
     
-    Links = []
-    if chats:
-        for x in chats:
-            Name = x["chat_name"]
-            
-            if Name == None:
-                continue
-            
-            chatId=int(x["chat_id"])
-            
-            Link = await bot.export_chat_invite_link(chatId)
-            Links.append({"chat_id": chatId, "chat_name": Name, "invite_link": Link})
-
-        INVITE_LINK[str(group_id)] = Links
-    return 
-
-
-async def recacher(group_id, ReCacheInvite=True, ReCacheActive=False, bot=Bot, update=Message):
-    """
-    A Funtion To rechase invite links and active chats of a specific chat
-    """
-    global INVITE_LINK, ACTIVE_CHATS
-
-    if ReCacheInvite:
-        if INVITE_LINK.get(str(group_id)):
-            INVITE_LINK.pop(str(group_id))
-        
-        Links = []
-        chats = await db.find_chat(group_id)
-        chats = chats["chat_ids"]
-        
-        if chats:
-            for x in chats:
-                Name = x["chat_name"]
-                chat_id = x["chat_id"]
-                if (Name == None or chat_id == None):
-                    continue
-                
-                chat_id = int(chat_id)
-                
-                Link = await bot.export_chat_invite_link(chat_id)
-                Links.append({"chat_id": chat_id, "chat_name": Name, "invite_link": Link})
-
-            INVITE_LINK[str(group_id)] = Links
+        elif int(index_val) == 0:
+            pass
     
-    if ReCacheActive:
+        else:
+            temp_results.append([
+                InlineKeyboardButton("⏪ Back", callback_data=f"{index_val} | {query.from_user.id} | back_btn"),
+                InlineKeyboardButton("Next ⏩", callback_data=f"{index_val} | {query.from_user.id} | next_btn")
+            ])
+    
+        reply_markup = InlineKeyboardMarkup(temp_results)
         
-        if ACTIVE_CHATS.get(str(group_id)):
-            ACTIVE_CHATS.pop(str(group_id))
+        if index_val == 0:
+           text=f"Found {(len(result)*30 - (30 - len(result [-1])))} Results For Query"
+        else:
+           text=f"Page `{index_val}` For Your Query....."
         
-        achats = await db.find_active(group_id)
-        achatId = []
-        if achats:
-            for x in achats["chats"]:
-                achatId.append(int(x["chat_id"]))
-            
-            ACTIVE_CHATS[str(group_id)] = achatId
-    return 
-
+        time.sleep(1) # Just A Mesure To Prevent Flood Wait🙁
+        try:
+            await query.message.edit(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="md"
+            )
+        except FloodWait as f:
+            await asyncio.sleep(f.x)
+            await query.message.edit(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="md"
+            )
