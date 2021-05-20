@@ -10,7 +10,7 @@ class Translation(object):
 I have 4m movies🔥🔥😝
 
 For More movies first update & Upload..
-@Tamil_Tentkottq
+@Tamil_Tentkotta
 </i>"""    
     
     HELP_TEXT = """
